@@ -9,138 +9,115 @@ st.set_page_config(
     layout="wide"
 )
 
-# USGS API
 URL = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson"
 
-
 @st.cache_data(ttl=300)
-def load_earthquake_data():
-    response = requests.get(URL)
-    data = response.json()
+def load_data():
+    try:
+        response = requests.get(URL, timeout=10)
+        response.raise_for_status()
 
-    earthquakes = []
+        data = response.json()
 
-    for feature in data["features"]:
-        properties = feature["properties"]
-        geometry = feature["geometry"]
+        rows = []
 
-        earthquakes.append({
-            "시간": datetime.fromtimestamp(
-                properties["time"] / 1000
-            ),
-            "규모": properties["mag"],
-            "위치": properties["place"],
-            "위도": geometry["coordinates"][1],
-            "경도": geometry["coordinates"][0],
-            "깊이(km)": geometry["coordinates"][2]
-        })
+        for feature in data["features"]:
+            prop = feature["properties"]
+            geo = feature["geometry"]
 
-    return pd.DataFrame(earthquakes)
+            mag = prop.get("mag")
 
+            if mag is None:
+                continue
 
-# 제목
+            rows.append({
+                "시간": datetime.fromtimestamp(prop["time"] / 1000),
+                "규모": float(mag),
+                "위치": prop.get("place", "정보 없음"),
+                "위도": geo["coordinates"][1],
+                "경도": geo["coordinates"][0],
+                "깊이(km)": geo["coordinates"][2]
+            })
+
+        return pd.DataFrame(rows)
+
+    except Exception as e:
+        st.error(f"데이터를 불러오지 못했습니다.\n{e}")
+        return pd.DataFrame()
+
 st.title("🌍 실시간 세계 지진 모니터링")
-st.caption("USGS Earthquake API 기반")
 
-# 새로고침
-if st.button("🔄 데이터 새로고침"):
+if st.button("새로고침"):
     st.cache_data.clear()
+    st.rerun()
 
-# 데이터 로드
-df = load_earthquake_data()
+df = load_data()
 
-# 사이드바
-st.sidebar.header("필터")
+if df.empty:
+    st.warning("표시할 지진 데이터가 없습니다.")
+    st.stop()
 
 min_mag = st.sidebar.slider(
     "최소 규모",
-    0.0,
-    10.0,
-    3.0,
-    0.1
+    min_value=0.0,
+    max_value=10.0,
+    value=3.0,
+    step=0.1
 )
 
-filtered_df = df[df["규모"] >= min_mag]
+filtered = df[df["규모"] >= min_mag]
 
-# 통계
+if filtered.empty:
+    st.warning("조건에 맞는 지진이 없습니다.")
+    st.stop()
+
 col1, col2, col3, col4 = st.columns(4)
 
-with col1:
-    st.metric(
-        "총 지진 수",
-        len(filtered_df)
-    )
+col1.metric("총 지진 수", len(filtered))
+col2.metric("최대 규모", f"{filtered['규모'].max():.1f}")
+col3.metric("평균 규모", f"{filtered['규모'].mean():.2f}")
+col4.metric("규모 5 이상", len(filtered[filtered["규모"] >= 5]))
 
-with col2:
-    st.metric(
-        "최대 규모",
-        f"{filtered_df['규모'].max():.1f}"
-    )
-
-with col3:
-    st.metric(
-        "평균 규모",
-        f"{filtered_df['규모'].mean():.2f}"
-    )
-
-with col4:
-    st.metric(
-        "규모 5 이상",
-        len(filtered_df[filtered_df["규모"] >= 5])
-    )
-
-st.divider()
-
-# 지도
 st.subheader("🗺️ 지진 발생 위치")
 
-map_df = filtered_df[["위도", "경도"]]
-map_df.columns = ["lat", "lon"]
+map_df = filtered.rename(
+    columns={
+        "위도": "lat",
+        "경도": "lon"
+    }
+)
 
-st.map(map_df)
+st.map(map_df[["lat", "lon"]])
 
-st.divider()
-
-# 규모별 분포
 st.subheader("📊 규모 분포")
 
-mag_count = (
-    filtered_df["규모"]
+chart_data = (
+    filtered["규모"]
     .round()
     .value_counts()
     .sort_index()
 )
 
-st.bar_chart(mag_count)
+st.bar_chart(chart_data)
 
-st.divider()
+st.subheader("🚨 규모 상위 10개 지진")
 
-# 최근 강한 지진
-st.subheader("🚨 규모가 큰 지진 TOP 10")
-
-top10 = (
-    filtered_df
-    .sort_values("규모", ascending=False)
-    .head(10)
-)
+top10 = filtered.sort_values(
+    "규모",
+    ascending=False
+).head(10)
 
 st.dataframe(
-    top10[["시간", "규모", "위치", "깊이(km)"]],
+    top10,
     use_container_width=True
 )
 
-st.divider()
-
-# 전체 목록
-st.subheader("📋 최근 지진 목록")
-
-display_df = filtered_df.sort_values(
-    "시간",
-    ascending=False
-)
+st.subheader("📋 전체 지진 목록")
 
 st.dataframe(
-    display_df,
-    use_container_width=True,
-    hide_index=True
+    filtered.sort_values(
+        "시간",
+        ascending=False
+    ),
+    use_container_width=True
 )
